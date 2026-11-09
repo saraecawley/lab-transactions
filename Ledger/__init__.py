@@ -3,7 +3,7 @@ from sqlalchemy.sql import text
 import os
 import logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format=f'%(asctime)s.%(msecs)03d - {os.getpid()} - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
@@ -49,7 +49,7 @@ class Ledger:
             self.connection.execute(sql)
 
             # get the account_id for the new account
-            sql = text('SELECT account_id FROM accounts WHERE name=:name')
+            sql = text('SELECT account_id FROM accounts WHERE name=:name;')
             sql = sql.bindparams(name=name)
             logging.debug(sql)
             results = self.connection.execute(sql)
@@ -63,17 +63,22 @@ class Ledger:
     def transfer_funds(self, debit_account_id, credit_account_id, amount):
         if self.connection.in_transaction():
             self.connection.rollback()
-        with self.connection.begin():
-            sql = text('LOCK TABLE balances IN ACCESS EXCLUSIVE MODE;')
-            logging.debug(sql); self.connection.execute(sql)
+        while True:
+            try:
+                with self.connection.begin():
+                    # sql = text('LOCK TABLE balances IN ACCESS EXCLUSIVE MODE;')
+                    # logging.debug(sql); self.connection.execute(sql)
 
-            sql = text('INSERT INTO transactions (debit_account_id, credit_account_id, amount) '
-                'VALUES (:d, :c, :a);').bindparams(d=debit_account_id, c=credit_account_id, a=amount)
-            logging.debug(sql); self.connection.execute(sql)
+                    sql = text('INSERT INTO transactions (debit_account_id, credit_account_id, amount) '
+                        'VALUES (:d, :c, :a);').bindparams(d=debit_account_id, c=credit_account_id, a=amount)
+                    logging.debug(sql); self.connection.execute(sql)
 
-            for acct, sign in ((debit_account_id, -1), (credit_account_id, +1)):
-                sql = text('SELECT balance FROM balances WHERE account_id=:a;').bindparams(a=acct)
-                logging.debug(sql)
-                bal = self.connection.execute(sql).first()[0]
-                sql = text('UPDATE balances SET balance=:b WHERE account_id=:a;').bindparams(b=bal + sign*amount, a=acct)
-                logging.debug(sql); self.connection.execute(sql)
+                    for acct, sign in ((debit_account_id, -1), (credit_account_id, +1)):
+                        sql = text('SELECT balance FROM balances WHERE account_id=:a FOR UPDATE;').bindparams(a=acct)
+                        logging.debug(sql)
+                        bal = self.connection.execute(sql).first()[0]
+                        sql = text('UPDATE balances SET balance=:b WHERE account_id=:a;').bindparams(b=bal + sign*amount, a=acct)
+                        logging.debug(sql); self.connection.execute(sql)
+                break
+            except Exception as x:
+                logging.WARNING(f'error, retrying: {x}')
